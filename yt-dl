@@ -1,0 +1,33 @@
+#!/bin/bash
+
+# Exemple
+# ./yt-dl.sh "https://www.youtube.com/watch?v=f_aqzyIDudI" "https://i.ytimg.com/vi/f_aqzyIDudI/maxresdefault.jpg" "livre-audio"
+
+YOUTUBE_URL="$1"
+COVER_URL="$2"
+OUTPUT_NAME="$3"  # sans extension, optionnel
+
+if [[ -z "$YOUTUBE_URL" || -z "$COVER_URL" ]]; then
+  echo "Usage : $0 <youtube_url> <cover_image_url> [output_name_without_extension]"
+  exit 1
+fi
+
+command -v yt-dlp >/dev/null || { echo "yt-dlp manquant"; exit 1; }
+command -v ffmpeg >/dev/null || { echo "ffmpeg manquant"; exit 1; }
+command -v wget >/dev/null || { echo "wget manquant"; exit 1; }
+command -v AtomicParsley >/dev/null || { echo "AtomicParsley manquant"; exit 1; }
+
+yt-dlp -x --audio-format m4a \
+  --add-chapters \
+  --no-playlist \
+  -o "audio.%(ext)s" \
+  "$YOUTUBE_URL" || { echo "Erreur yt-dlp"; exit 1; }
+
+FF_INPUT="audio.m4a"
+FF_OUTPUT="${OUTPUT_NAME:-final}.m4a"
+
+AtomicParsley "$FF_INPUT" --artwork "$COVER_URL" --overWrite || { echo "Erreur AtomicParsley"; exit 1; }
+
+mv "$FF_INPUT" "$FF_OUTPUT"
+
+echo "✅ Fichier généré : $FF_OUTPUT"

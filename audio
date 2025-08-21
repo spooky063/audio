@@ -1,0 +1,287 @@
+#!/bin/bash
+
+# MERGE MULTIPLE AUDIO FILES AND METADATA
+# [x] 1 - récupérer les chapitres de toutes les pistes audio
+#    ./audio.sh get_chapters audio_file1.m4a audio_file2.m4a
+
+# [x] 2 - ajuster les chapitres pour qu’ils commencent à la bonne place selon l'ordre des pistes audio
+#    ./audio.sh adjust_chapters_correctly audio_file1-metadata.txt audio_file2-metadata.txt
+
+# [x] 3 - supprimer les chapitres des fichiers metadata
+#    ./audio.sh delete_chapters_from_metadata audio_file1-metadata.txt audio_file2-metadata.txt
+
+# [x] 4 - supprimer les chapitres des fichiers audio
+#    ./audio.sh set_chapters audio_file1.m4a audio_file1-metadata-nochapters.txt
+
+# [x] 5 - préparer le fichier qui liste des pistes audio selon l'ordre d'écoute
+#    ./audio.sh prepare_audio_files audio_file1-chapters.m4a audio_file2-chapters.m4a
+
+# [x] 6 - corriger la fréquence audio pour qu’elle soit égale à 48000 Hz (si besoin, pour de l'audio 44100 mHz est suffisant)
+#    ./audio.sh correct_audio_frequency audio_file1-chapters.m4a audio_file2-chapters.m4a
+
+# [x] 7 - fusionner les fichiers audio
+#    ./audio.sh merge_audio
+
+# [x] 8.1 - changer les fichiers metatada-adjusted.txt pour qu'ils contiennent les chapitres
+# [x] 8.2 - préparer le fichier metadata qui liste les chapitres selon l'ordre d'écoute
+#    ./audio.sh merge_metadata audio_file1-metadata-nochapters.txt audio_file2-metadata-nochapters.txt
+
+# [x] 9 - ajouter les chapitres a la nouvelle piste audio
+#    ./audio.sh set_chapters audio_file1-chapters.m4a audio_file1-metadata-metadata-adjusted.txt
+
+# [x] 10 - mettre le thumbnail sur la nouvelle piste audio
+#    ./audio.sh set_thumbnail audio_file1-chapters.m4a cover.jpg
+
+set -e
+
+get_chapters() {
+    for audio in "$@"; do
+        if [ ! -f "$audio" ]; then
+            echo "Fichier introuvable: $audio"
+            exit 1
+        fi
+
+        output="${audio%.*}-metadata.txt"
+
+        ffmpeg -y -i "$audio" -f ffmetadata "$output"
+    done
+}
+
+adjust_chapters_correctly() {
+    offset=0
+
+    for metadata in "$@"; do
+        if [ ! -f "$metadata" ]; then
+            echo "Fichier introuvable: $metadata"
+            exit 1
+        fi
+
+        output="${metadata%.txt}-adjusted.txt"
+
+        awk -v offset="$offset" '
+        BEGIN { inChapter=0 }
+        /^\[CHAPTER\]/ { inChapter=1; print; next }
+        /^TIMEBASE=/ { print; next }
+        /^START=/ {
+            newStart = $0;
+            sub(/^START=/, "", newStart);
+            print "START=" newStart + offset;
+            next
+        }
+        /^END=/ {
+            newEnd = $0;
+            sub(/^END=/, "", newEnd);
+            print "END=" newEnd + offset;
+            if (newEnd + offset > maxEnd) maxEnd = newEnd + offset;
+            next
+        }
+        { print }
+        END {
+            # stocker maxEnd dans une variable globale shell
+            printf("OFFSET_NEXT=%d\n", maxEnd) > "/dev/stderr"
+        }
+        ' "$metadata" > "$output" 2>tmp_offset.txt
+
+        offset=$(grep OFFSET_NEXT tmp_offset.txt | cut -d= -f2)
+        rm tmp_offset.txt
+
+        echo "Chapitres ajustés -> $output (offset suivant: $offset)"
+    done
+}
+
+delete_chapters_from_metadata() {
+    for metadata in "$@"; do
+        if [ ! -f "$metadata" ]; then
+            echo "Fichier introuvable: $metadata"
+            continue
+        fi
+
+        output="${metadata%.txt}-nochapters.txt"
+
+        awk '
+        BEGIN { skip=0 }
+        {
+            if ($0 ~ /^\[CHAPTER\]/) { skip=1; next }
+            if (skip && $0 ~ /^title=/) { skip=0; next }
+            if (skip && ($0 ~ /^TIMEBASE=/ || $0 ~ /^START=/ || $0 ~ /^END=/)) { next }
+            if (!skip) print
+        }
+        ' "$metadata" > "$output"
+
+        echo "Chapitres supprimés -> $output"
+    done
+}
+
+set_chapters() {
+    audio_file="$1"
+    metadata_file="$2"
+
+    if [[ -z "$audio_file" || -z "$metadata_file" ]]; then
+        echo "Usage : $0 <audio_file> <metadata_file>.txt"
+        exit 1
+    fi
+
+    command -v ffmpeg >/dev/null || { echo "ffmpeg missing"; exit 1; }
+
+    output="${audio_file%.*}-chapters.${audio_file##*.}"
+
+    ffmpeg -y -i "$audio_file" -i "$metadata_file" \
+    -map 0:a -map_metadata 1 -map_chapters 1 \
+    -c:a copy -movflags use_metadata_tags \
+    "temp.mp4"
+
+    ffmpeg -y -i "temp.mp4" -c:a copy -f ipod "$output"
+    rm temp.mp4
+    echo "Fichier audio : $output"
+}
+
+prepare_audio_files() {
+    output="list.txt"
+
+    if [[ -f "$output" ]]; then
+        rm "$output"
+    fi
+
+    for audio in "$@"; do
+        echo "file '$(realpath "$audio")'" >> "$output"
+    done
+}
+
+correct_audio_frequency() {
+    for audio in "$@"; do
+        if [ ! -f "$audio" ]; then
+            echo "Fichier introuvable: $audio"
+            exit 1
+        fi
+
+        output="${audio%.*}-frequency-corrected.${audio##*.}"
+
+        ffmpeg -y -i "$audio" -ar 48000 "$output"
+    done
+}
+
+merge_audio() {
+    if [[ ! -f list.txt ]]; then
+        echo "list.txt missing. Run prepare_audio_files first."
+        exit 1
+    fi
+
+    output="audio-merged.m4a"
+
+    ffmpeg -f concat -safe 0 -i list.txt -c copy "$output"
+}
+
+merge_metadata() {
+    output="metadata-merged.txt"
+    first=1
+
+    > "$output"
+
+    for metadata in "$@"; do
+        if [ ! -f "$metadata" ]; then
+            echo "Fichier introuvable: $metadata"
+            return 1
+        fi
+
+        if [ "$first" -eq 1 ]; then
+            cat "$metadata" >> "$output"
+            first=0
+        else
+            awk 'BEGIN{copy=0}
+                 /^\[CHAPTER\]/ {copy=1}
+                 copy {print}' "$metadata" >> "$output"
+        fi
+    done
+
+    echo "Metadata fusionné vers : $output"
+}
+
+set_thumbnail() {
+    audio="$1"
+    cover_path="$2"
+
+    if [[ -z "$audio" || -z "$cover_path" ]]; then
+        echo "Usage : $0 <audio> <cover_path>"
+        exit 1
+    fi
+
+    AtomicParsley "$audio" --artwork "$cover_path" --overWrite || { echo "Erreur AtomicParsley"; exit 1; }
+}
+
+usage() {
+    echo "Usage: $0 <commande> [arguments]"
+    echo
+    echo "Commandes disponibles:"
+    printf "  %-75s %s\n" "get_chapters <audio_file1.m4a> <audio_file2.m4a>" " Récupére les chapitres de toutes les pistes audio passées en argument"
+    printf "  %-75s %s\n" "adjust_chapters_correctly <metadata_file1.txt> <metadata_file2.txt>" " Ajuste les chapitres pour qu’ils commencent à la bonne place selon l'ordre des pistes audio"
+    printf "  %-75s %s\n" "delete_chapters_from_metadata <metadata_file1.txt> <metadata_file2.txt>" " Supprime les chapitres des fichiers metadata"
+    printf "  %-75s %s\n" "set_chapters <audio_file> <metadata_file>.txt" " Ajoute les chapitres à la nouvelle piste audio"
+    printf "  %-75s %s\n" "prepare_audio_files <audio_file1.m4a> <audio_file2.m4a>" " Prépare le fichier qui liste des pistes audio selon l'ordre d'écoute"
+    printf "  %-75s %s\n" "correct_audio_frequency <audio_file1.m4a> <audio_file2.m4a>" " Corrige la fréquence audio pour qu’elle soit égale à 48000 Hz (si besoin, pour de l'audio 44100 mHz est suffisant)"
+    printf "  %-75s %s\n" "merge_audio" " Fusionne les fichiers audio"
+    printf "  %-75s %s\n" "merge_metadata <metadata_file1.txt> <metadata_file2.txt>" " Prépare le fichier metadata qui liste les chapitres selon l'ordre d'écoute"
+    printf "  %-75s %s\n" "set_thumbnail <audio_file> <cover_path>" " Met le thumbnail sur la nouvelle piste audio"
+    echo
+    echo "Options:"
+    printf "  %-20s %s\n" "-h, --help" " Affiche cette aide"
+    echo
+    echo "Exemples:"
+    echo "  ./audio.sh get_chapters audio_file1.m4a audio_file2.m4a"
+    echo "  ./audio.sh adjust_chapters_correctly audio_file1-metadata.txt audio_file2-metadata.txt"
+    echo "  ./audio.sh delete_chapters_from_metadata audio_file1-metadata.txt audio_file2-metadata.txt"
+    echo "  ./audio.sh set_chapters audio_file <metadata_file>.txt"
+    echo "  ./audio.sh prepare_audio_files audio_file1-chapters.m4a audio_file2-chapters.m4a"
+    echo "  ./audio.sh correct_audio_frequency audio_file1-chapters.m4a audio_file2-chapters.m4a"
+    echo "  ./audio.sh merge_audio"
+    echo "  ./audio.sh merge_metadata audio_file1-metadata-nochapters.txt audio_file2-metadata-nochapters.txt"
+    echo "  ./audio.sh set_thumbnail audio_file1-chapters.m4a cover.jpg"
+}
+
+main() {
+    case "$1" in
+        get_chapters)
+            shift
+            get_chapters "$@"
+            ;;
+        adjust_chapters_correctly)
+            shift
+            adjust_chapters_correctly "$@"
+            ;;
+        delete_chapters_from_metadata)
+            shift
+            delete_chapters_from_metadata "$@"
+            ;;
+        set_chapters)
+            shift
+            set_chapters "$@"
+            ;;
+        prepare_audio_files)
+            shift
+            prepare_audio_files "$@"
+            ;;
+        correct_audio_frequency)
+            shift
+            correct_audio_frequency "$@"
+            ;;
+        merge_audio)
+            shift
+            merge_audio "$@"
+            ;;
+        merge_metadata)
+            shift
+            merge_metadata "$@"
+            ;;
+        set_thumbnail)
+            shift
+            set_thumbnail "$@"
+            ;;
+        --help|-h|--manual)
+            usage
+            exit 1
+            ;;
+        *)
+            echo "$0: try '$0 --help' or '$0 --manual' for more information"
+    esac
+}
+
+main "$@"
