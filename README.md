@@ -10,7 +10,11 @@
 ## Utilisation
 
 ```bash
-./audio.sh <commande> [arguments]
+chmod +x audio
+```
+
+```bash
+./audio <commande> [arguments]
 ```
 
 ### Commandes
