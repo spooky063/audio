@@ -24,13 +24,13 @@
 
 # [x] 8.1 - changer les fichiers metatada-adjusted.txt pour qu'ils contiennent les chapitres
 # [x] 8.2 - préparer le fichier metadata qui liste les chapitres selon l'ordre d'écoute
-#    ./audio.sh merge_metadata audio_file1-metadata-nochapters.txt audio_file2-metadata-nochapters.txt
+#    ./audio.sh merge_metadata audio_file1-metadata-adjusted.txt audio_file2-metadata-adjusted.txt
 
 # [x] 9 - ajouter les chapitres a la nouvelle piste audio
-#    ./audio.sh set_chapters audio_file1-chapters.m4a audio_file1-metadata-metadata-adjusted.txt
+#    ./audio.sh set_chapters audio-merged.m4a metadata-merged.txt
 
 # [x] 10 - mettre le thumbnail sur la nouvelle piste audio
-#    ./audio.sh set_thumbnail audio_file1-chapters.m4a cover.jpg
+#    ./audio.sh set_thumbnail audio_file1-merged-chapters.m4a cover.jpg
 
 set -e
 
@@ -160,15 +160,27 @@ correct_audio_frequency() {
     done
 }
 
-merge_audio() {
+merge_audio_fast() {
     if [[ ! -f list.txt ]]; then
         echo "list.txt missing. Run prepare_audio_files first."
         exit 1
     fi
 
-    output="audio-merged.m4a"
+    output="audio-merged-fast.m4a"
 
     ffmpeg -f concat -safe 0 -i list.txt -c copy "$output"
+}
+
+merge_audio() {
+    output="audio-merged.m4a"
+
+    ffmpeg_command="ffmpeg -y"
+    for audio in "$@"; do
+        audio=$(printf %q "$audio")
+        ffmpeg_command+=" -i $(realpath "$audio")"
+    done
+    ffmpeg_command+=" -filter_complex 'concat=n="$#":v=0:a=1[a_out]' -map '[a_out]' $output"
+    echo $ffmpeg_command  | bash
 }
 
 merge_metadata() {
@@ -218,7 +230,8 @@ usage() {
     printf "  %-75s %s\n" "set_chapters <audio_file> <metadata_file>.txt" " Ajoute les chapitres à la nouvelle piste audio"
     printf "  %-75s %s\n" "prepare_audio_files <audio_file1.m4a> <audio_file2.m4a>" " Prépare le fichier qui liste des pistes audio selon l'ordre d'écoute"
     printf "  %-75s %s\n" "correct_audio_frequency <audio_file1.m4a> <audio_file2.m4a>" " Corrige la fréquence audio pour qu’elle soit égale à 48000 Hz (si besoin, pour de l'audio 44100 mHz est suffisant)"
-    printf "  %-75s %s\n" "merge_audio" " Fusionne les fichiers audio"
+    printf "  %-75s %s\n" "merge_audio_fast" " Fusionne les fichiers audio (rapide)"
+    printf "  %-75s %s\n" "merge_audio <audio_file1.m4a> <audio_file2.m4a>" " Fusionne les fichiers audio avec ré-encodage (lent mais plus sûr)"
     printf "  %-75s %s\n" "merge_metadata <metadata_file1.txt> <metadata_file2.txt>" " Prépare le fichier metadata qui liste les chapitres selon l'ordre d'écoute"
     printf "  %-75s %s\n" "set_thumbnail <audio_file> <cover_path>" " Met le thumbnail sur la nouvelle piste audio"
     echo
@@ -232,9 +245,9 @@ usage() {
     echo "  ./audio.sh set_chapters audio_file <metadata_file>.txt"
     echo "  ./audio.sh prepare_audio_files audio_file1-chapters.m4a audio_file2-chapters.m4a"
     echo "  ./audio.sh correct_audio_frequency audio_file1-chapters.m4a audio_file2-chapters.m4a"
-    echo "  ./audio.sh merge_audio"
-    echo "  ./audio.sh merge_metadata audio_file1-metadata-nochapters.txt audio_file2-metadata-nochapters.txt"
-    echo "  ./audio.sh set_thumbnail audio_file1-chapters.m4a cover.jpg"
+    echo "  ./audio.sh merge_audio_fast || ./audio.sh merge_audio audio_file1-chapters.m4a audio_file2-chapters.m4a"
+    echo "  ./audio.sh merge_metadata audio_file1-metadata-adjusted.txt audio_file2-metadata-adjusted.txt"
+    echo "  ./audio.sh set_thumbnail audio_file1-merged-chapters.m4a cover.jpg"
 }
 
 main() {
